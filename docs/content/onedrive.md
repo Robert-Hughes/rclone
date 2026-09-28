@@ -293,6 +293,11 @@ OneDrive allows modification times to be set on objects accurate to 1
 second.  These will be used to detect whether objects need syncing or
 not.
 
+OneDrive may update an item immediately after an upload, causing a subsequent
+modification-time update to fail with `resourceModified`. Rclone refreshes the
+item and retries that timestamp update only when the content `cTag` is unchanged.
+If the content changed concurrently, the conflict is returned instead.
+
 OneDrive Personal, OneDrive for Business and Sharepoint Server support
 [QuickXorHash](https://docs.microsoft.com/en-us/onedrive/developer/code-snippets/quickxorhash).
 
