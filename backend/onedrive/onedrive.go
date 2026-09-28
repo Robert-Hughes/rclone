@@ -859,6 +859,7 @@ type Object struct {
 	size          int64     // size of the object
 	modTime       time.Time // modification time of the object
 	id            string    // ID of the object
+	cTag          string    // cTag identifying the file content
 	hash          string    // Hash of the content, usually QuickXorHash but set as hash_type
 	mimeType      string    // Content-Type of object from server (may not be as uploaded)
 	meta          *Metadata // metadata properties
@@ -2313,6 +2314,7 @@ func (o *Object) setMetaData(info *api.Item) (err error) {
 		o.modTime = time.Time(info.GetLastModifiedDateTime())
 	}
 	o.id = info.GetID()
+	o.cTag = info.CTag
 	if o.meta == nil {
 		o.meta = o.fs.newMetadata(o.Remote())
 	}
@@ -2379,25 +2381,78 @@ func (o *Object) ModTime(ctx context.Context) time.Time {
 	return o.modTime
 }
 
+// isResourceModified reports whether err is OneDrive's stale-item conflict.
+func isResourceModified(err error) bool {
+	var apiErr *api.Error
+	return errors.As(err, &apiErr) && apiErr.ErrorInfo.Code == "resourceModified"
+}
+
+// itemModTime returns the client modification time reported for info.
+func itemModTime(info *api.Item) time.Time {
+	if fileSystemInfo := info.GetFileSystemInfo(); fileSystemInfo != nil {
+		return time.Time(fileSystemInfo.LastModifiedDateTime)
+	}
+	return time.Time(info.GetLastModifiedDateTime())
+}
+
 // setModTime sets the modification time of the local fs object
 func (o *Object) setModTime(ctx context.Context, modTime time.Time) (*api.Item, error) {
-	opts := o.fs.newOptsCallWithPath(ctx, o.remote, "PATCH", "")
+	var opts rest.Opts
+	if o.id != "" {
+		opts = o.fs.newOptsCall(o.id, "PATCH", "")
+	} else {
+		opts = o.fs.newOptsCallWithPath(ctx, o.remote, "PATCH", "")
+	}
 	update := api.SetFileSystemInfo{
 		FileSystemInfo: api.FileSystemInfoFacet{
 			CreatedDateTime:      api.Timestamp(o.tryGetBtime(modTime)),
 			LastModifiedDateTime: api.Timestamp(modTime),
 		},
 	}
+	expectedCTag := o.cTag
+	resourceModifiedRetries := 0
+	maxResourceModifiedRetries := 1
+	if o.fs.ci != nil {
+		maxResourceModifiedRetries = max(o.fs.ci.LowLevelRetries, 1)
+	}
 	var info *api.Item
-	err := o.fs.pacer.Call(func() (bool, error) {
-		resp, err := o.fs.srv.CallJSON(ctx, &opts, &update, &info)
-		return shouldRetry(ctx, resp, err)
-	})
+	var err error
+	for {
+		info = nil
+		err = o.fs.pacer.Call(func() (bool, error) {
+			resp, callErr := o.fs.srv.CallJSON(ctx, &opts, &update, &info)
+			return shouldRetry(ctx, resp, callErr)
+		})
+		if err == nil || !isResourceModified(err) || o.id == "" || expectedCTag == "" || resourceModifiedRetries >= maxResourceModifiedRetries {
+			break
+		}
+
+		current, _, readErr := o.fs.readMetaDataForPathRelativeToID(ctx, o.id, "")
+		if readErr != nil {
+			fs.Debugf(o, "Not retrying resourceModified while setting modification time: failed to refresh item: %v", readErr)
+			break
+		}
+		if current.CTag != expectedCTag {
+			fs.Debugf(o, "Not retrying resourceModified while setting modification time: content changed")
+			break
+		}
+
+		dt := itemModTime(current).Sub(modTime)
+		precision := o.fs.Precision()
+		if dt < precision && dt > -precision {
+			info = current
+			err = nil
+			break
+		}
+
+		resourceModifiedRetries++
+		fs.Debugf(o, "Retrying modification time update after resourceModified with unchanged content")
+	}
 	// Remove versions if required
 	if o.fs.opt.NoVersions {
-		err := o.deleteVersions(ctx)
-		if err != nil {
-			fs.Errorf(o, "Failed to remove versions: %v", err)
+		deleteErr := o.deleteVersions(ctx)
+		if deleteErr != nil {
+			fs.Errorf(o, "Failed to remove versions: %v", deleteErr)
 		}
 	}
 	return info, err
