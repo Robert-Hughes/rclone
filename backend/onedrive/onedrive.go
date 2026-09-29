@@ -932,6 +932,10 @@ func shouldRetry(ctx context.Context, resp *http.Response, err error) (bool, err
 				if apiErr.ErrorInfo.InnerError.Code == "pathIsTooLong" {
 					return false, fserrors.NoRetryError(err)
 				}
+				if apiErr.ErrorInfo.Code == "invalidRequest" && strings.Contains(strings.ToLower(apiErr.ErrorInfo.Message), "provided drive id appears to be malformed, or does not represent a valid drive") {
+					retry = true
+					fs.Debugf(nil, "HTTP 400: transient OneDrive malformed drive ID. Trying again.")
+				}
 			}
 		case 401:
 			if len(resp.Header["Www-Authenticate"]) == 1 && strings.Contains(resp.Header["Www-Authenticate"][0], "expired_token") {
