@@ -45,6 +45,61 @@ func TestShouldRetryMalformedDriveIDMessageCaseInsensitive(t *testing.T) {
 	assert.Same(t, err, gotErr)
 }
 
+func TestShouldRetryInvalidPagingTokenInvalidRequest(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusBadRequest}
+	err := oneDriveAPIError(
+		"invalidRequest",
+		"invalidQueryOption: Invalid paging token: failed to parse integer value from token.",
+		"",
+	)
+
+	retry, gotErr := shouldRetry(context.Background(), resp, err)
+
+	assert.True(t, retry)
+	assert.Same(t, err, gotErr)
+}
+
+func TestShouldRetryInvalidPagingTokenMessageCaseInsensitive(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusBadRequest}
+	err := oneDriveAPIError(
+		"invalidRequest",
+		"INVALIDQUERYOPTION: INVALID PAGING TOKEN: FAILED TO PARSE INTEGER VALUE FROM TOKEN.",
+		"",
+	)
+
+	retry, gotErr := shouldRetry(context.Background(), resp, err)
+
+	assert.True(t, retry)
+	assert.Same(t, err, gotErr)
+}
+
+func TestShouldRetryInvalidPagingTokenWithOtherCodeRemainsNonRetryable(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusBadRequest}
+	err := oneDriveAPIError(
+		"badRequest",
+		"invalidQueryOption: Invalid paging token: failed to parse integer value from token.",
+		"",
+	)
+
+	retry, gotErr := shouldRetry(context.Background(), resp, err)
+
+	assert.False(t, retry)
+	assert.Same(t, err, gotErr)
+}
+
+func TestShouldRetryOtherInvalidQueryOptionRemainsNonRetryable(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusBadRequest}
+	err := oneDriveAPIError(
+		"invalidRequest",
+		"invalidQueryOption: Unsupported query option.",
+		"",
+	)
+
+	retry, gotErr := shouldRetry(context.Background(), resp, err)
+
+	assert.False(t, retry)
+	assert.Same(t, err, gotErr)
+}
 func TestShouldRetryOtherInvalidRequestRemainsNonRetryable(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusBadRequest}
 	err := oneDriveAPIError("invalidRequest", "Some other invalid request.", "")
